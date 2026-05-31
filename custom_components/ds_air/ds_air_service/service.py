@@ -14,6 +14,7 @@ from .display import display
 from .param import (
     AirConControlParam,
     AirConQueryStatusParam,
+    GetAllSensorStateParam,
     HandShakeParam,
     HeartbeatParam,
     Param,
@@ -259,6 +260,36 @@ class Service:
     def set_sensors(self, sensors):
         self._sensors = sensors
 
+    def _find_sensor(self, new_sensor: Sensor) -> Sensor | None:
+        for sensor in self._sensors:
+            if (
+                sensor.gateway_id
+                and new_sensor.gateway_id
+                and sensor.gateway_id != new_sensor.gateway_id
+            ):
+                continue
+            if (
+                (new_sensor.room_id != 0 or new_sensor.unit_id != 0)
+                and sensor.unique_id == new_sensor.unique_id
+            ):
+                return sensor
+            sensor_ids = {value for value in (sensor.mac, sensor.alias) if value}
+            new_sensor_ids = {
+                value for value in (new_sensor.mac, new_sensor.alias) if value
+            }
+            if sensor_ids & new_sensor_ids:
+                return sensor
+        return None
+
+    def _notify_sensor_hooks(self, sensor: Sensor) -> None:
+        for item in self._sensor_hook:
+            unique_id, func = item
+            if sensor.unique_id == unique_id:
+                try:
+                    func(sensor)
+                except Exception as e:
+                    _log(str(e))
+
     def set_device(self, t: EnumDevice, v: list[AirCon]):
         self._none_stat_dev_cnt += len(v)
         if t == EnumDevice.AIRCON:
@@ -289,18 +320,26 @@ class Service:
 
     def set_sensors_status(self, sensors: list[Sensor]):
         for new_sensor in sensors:
-            for sensor in self._sensors:
-                if sensor.unique_id == new_sensor.unique_id:
-                    for attr in STATUS_ATTR:
-                        setattr(sensor, attr, getattr(new_sensor, attr))
-                    break
-            for item in self._sensor_hook:
-                unique_id, func = item
-                if new_sensor.unique_id == unique_id:
-                    try:
-                        func(new_sensor)
-                    except Exception as e:
-                        _log(str(e))
+            sensor = self._find_sensor(new_sensor)
+            if sensor is None:
+                continue
+            for attr in STATUS_ATTR:
+                setattr(sensor, attr, getattr(new_sensor, attr))
+            self._notify_sensor_hooks(sensor)
+
+    def set_sensors_connection_state(self, sensors: list[Sensor]):
+        for new_sensor in sensors:
+            sensor = self._find_sensor(new_sensor)
+            if sensor is None:
+                continue
+            if new_sensor.mac:
+                sensor.mac = new_sensor.mac
+            if not sensor.alias and new_sensor.alias:
+                sensor.alias = new_sensor.alias
+            if new_sensor.sensor_type:
+                sensor.sensor_type = new_sensor.sensor_type
+            sensor.connected = new_sensor.connected
+            self._notify_sensor_hooks(sensor)
 
     def poll_status(self):
         for i in self._new_aircons:
@@ -309,6 +348,8 @@ class Service:
             p.device = i
             self.send_msg(p)
         p = Sensor2InfoParam()
+        self.send_msg(p)
+        p = GetAllSensorStateParam()
         self.send_msg(p)
 
     def update_aircon(self, target: EnumDevice, room: int, unit: int, **kwargs):

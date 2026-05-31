@@ -138,6 +138,11 @@ class Sensor2InfoParam(Param):
         s.write1(255)
 
 
+class GetAllSensorStateParam(SystemParam):
+    def __init__(self):
+        SystemParam.__init__(self, EnumCmdType.SYS_GET_ALL_SENSOR_STATE, True)
+
+
 class AirconParam(Param):
     def __init__(self, cmd_cype, has_result):
         Param.__init__(self, EnumDevice.AIRCON, cmd_cype, has_result)

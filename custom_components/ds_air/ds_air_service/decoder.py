@@ -32,6 +32,7 @@ from .param import (
     AirConCapabilityQueryParam,
     AirConQueryStatusParam,
     AirConRecommendedIndoorTempParam,
+    GetAllSensorStateParam,
     GetRoomInfoParam,
     Sensor2InfoParam,
 )
@@ -93,6 +94,13 @@ def result_factory(data: tuple, config: Config):
             result = ChangePWResult(cnt, EnumDevice.SYSTEM)
         elif cmd_type == EnumCmdType.SYS_GET_ROOM_INFO.value:
             result = GetRoomInfoResult(cnt, EnumDevice.SYSTEM)
+        elif cmd_type in (
+            EnumCmdType.SYS_GET_ALL_SENSOR_STATE.value,
+            EnumCmdType.SYS_GET_ALL_SENSOR_STATE_MESH.value,
+        ):
+            result = SensorConnectionStateResult(
+                cnt, EnumDevice.SYSTEM, EnumCmdType(cmd_type)
+            )
         elif cmd_type == EnumCmdType.SYS_QUERY_SCHEDULE_SETTING.value:
             result = QueryScheduleSettingResult(cnt, EnumDevice.SYSTEM)
         elif cmd_type == EnumCmdType.SYS_QUERY_SCHEDULE_ID.value:
@@ -331,6 +339,70 @@ class Sensor2InfoResult(BaseResult):
         return self._sensors
 
 
+class SensorConnectionStateResult(BaseResult):
+    def __init__(
+        self, cmd_id: int, target: EnumDevice, cmd_type: EnumCmdType
+    ) -> None:
+        BaseResult.__init__(self, cmd_id, target, cmd_type)
+        self._mode = 0
+        self._count = 0
+        self._sensors: list[Sensor] = []
+
+    def load_bytes(self, b: bytes, config: Config) -> None:
+        if len(b) < 2:
+            return
+
+        pos = 0
+        self._mode = b[pos]
+        pos += 1
+        self._count = b[pos]
+        pos += 1
+
+        for _ in range(self._count):
+            if pos + 9 > len(b):
+                break
+            sensor_type = b[pos]
+            pos += 1
+            pos += 1
+            mac = b[pos : pos + 6].hex()
+            pos += 6
+            length = b[pos]
+            pos += 1
+            if pos + length + 1 > len(b):
+                break
+            try:
+                alias = b[pos : pos + length].decode("utf-8")
+            except UnicodeDecodeError:
+                alias = ""
+            pos += length
+            connected = b[pos] == 1
+            pos += 1
+
+            sensor = Sensor()
+            sensor.gateway_id = config.gateway_id
+            sensor.sensor_type = sensor_type
+            sensor.mac = mac
+            sensor.alias = alias or mac
+            sensor.name = sensor.alias
+            sensor.connected = connected
+            self._sensors.append(sensor)
+
+    def do(self, service: Service) -> None:
+        service.set_sensors_connection_state(self._sensors)
+
+    @property
+    def count(self):
+        return self._count
+
+    @property
+    def mode(self):
+        return self._mode
+
+    @property
+    def sensors(self):
+        return self._sensors
+
+
 class CmdRspResult(BaseResult):
     def __init__(self, cmd_id: int, target: EnumDevice):
         BaseResult.__init__(self, cmd_id, target, EnumCmdType.SYS_CMD_RSP)
@@ -532,6 +604,9 @@ class GetRoomInfoResult(BaseResult):
         service.set_rooms(self.rooms)
         service.send_msg(AirConRecommendedIndoorTempParam())
         service.set_sensors(self.sensors)
+        if self.sensors:
+            service.send_msg(Sensor2InfoParam())
+            service.send_msg(GetAllSensorStateParam())
 
         aircons = []
         new_aircons = []
@@ -608,7 +683,6 @@ class HandShakeResult(BaseResult):
         p.room_ids.append(0xFFFF)
 
         service.send_msg(p)
-        service.send_msg(Sensor2InfoParam())
 
 
 class GetGWInfoResult(BaseResult):
